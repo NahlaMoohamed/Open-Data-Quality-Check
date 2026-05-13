@@ -1,0 +1,9 @@
+requests>=2.31.0
+python-dotenv>=1.0.0
+openpyxl>=3.11.0
+pandas>=2.0.0
+pyyaml>=6.0
+click>=8.1.0
+colorama>=0.4.6
+tqdm>=4.65.0
+chardet>=5.2.0

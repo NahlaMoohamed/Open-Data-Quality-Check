@@ -1,0 +1,50 @@
+# Bayanat Open Data Portal Configuration
+api:
+  base_url: "https://bayanat.ae/api/3"
+  timeout: 30
+  max_retries: 3
+
+# Quality check configurations
+quality_checks:
+  resource_validation:
+    enabled: true
+    max_file_size_mb: 500
+    
+  language_check:
+    enabled: true
+    required_languages: ["en", "ar"]
+    
+  excel_validation:
+    enabled: true
+    max_sheets: 1
+    check_pivot_tables: true
+    
+  metadata:
+    enabled: true
+    required_fields:
+      - "title"
+      - "description"
+      - "organization"
+      
+  arabic_encoding:
+    enabled: true
+    
+  time_period:
+    enabled: true
+    # Fields that might contain time period information
+    search_fields: ["temporal_start", "temporal_end", "date", "period", "year"]
+
+# Reporting
+reporting:
+  output_formats: ["json", "csv", "html"]
+  save_dir: "./reports"
+  include_summary: true
+  
+# Organization filters
+organizations:
+  # Leave empty to check all, or add specific org names
+  enabled: true
+  
+logging:
+  level: "INFO"
+  file: "logs/quality_check.log"

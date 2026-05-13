@@ -1,0 +1,19 @@
+# Organization-specific quality check configurations
+
+# Example: Ministry of Health specific checks
+ministry_of_health:
+  required_languages: ["ar", "en"]
+  data_dictionary_required: true
+  max_datasets_to_check: 500
+
+# Example: Statistics Center specific checks
+statistics_center:
+  required_languages: ["ar", "en"]
+  time_period_required: true
+  min_tags: 5
+
+# Example: Ministry of Education
+ministry_of_education:
+  required_languages: ["ar", "en"]
+  data_dictionary_required: true
+  check_pivot_tables: true
