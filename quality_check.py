@@ -1,6 +1,7 @@
 """Main quality check orchestrator and CLI"""
 
 import logging
+import re
 import sys
 from typing import Dict, Any, List, Optional
 from pathlib import Path
@@ -38,13 +39,17 @@ class DataQualityChecker:
             log_level=log_config.get("level", "INFO"),
             log_file=log_config.get("file"),
         )
+        logger.info(f"Loaded configuration from {config_path}")
         
         # Initialize API client
         api_config = self.config.get("api", {})
         self.client = BayanatClient(
             base_url=api_config.get("base_url", "https://bayanat.ae/api/3"),
+            site_base_url=api_config.get("site_base_url", "https://bayanat.ae"),
             timeout=api_config.get("timeout", 30),
         )
+        logger.info(f"Initialized BayanatClient with base_url={self.client.base_url}")
+        logger.info(f"Website scraping base URL: {self.client.site_base_url}")
 
     def check_dataset(self, dataset: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -56,24 +61,42 @@ class DataQualityChecker:
         Returns:
             Comprehensive quality check result
         """
+        dataset = self.client.attach_resource_guids_to_dataset(dataset)
+
+        organization = dataset.get("organization")
+        if isinstance(organization, dict):
+            organization_name = organization.get("title", "N/A")
+        else:
+            organization_name = organization or "N/A"
+
         result = {
             "dataset_id": dataset.get("id"),
             "dataset_name": dataset.get("title", "N/A"),
-            "organization": dataset.get("organization", {}).get("title", "N/A"),
+            "dataset_description": dataset.get("description", ""),
+            "organization": organization_name,
             "resource_count": len(dataset.get("resources", [])),
+            "resource_guids": dataset.get("resource_guids", []),
+            "resources": dataset.get("resources", []),
+            "years_found": self.extract_years(dataset),
             "checks": {},
             "issues": [],
             "overall_status": "pass",
         }
 
         quality_checks = self.config.get("quality_checks", {})
+        logger.info(
+            f"Starting quality checks for dataset_id={result['dataset_id']} "
+            f"title={result['dataset_name']} resource_count={result['resource_count']}"
+        )
 
         # Resource validation
         if quality_checks.get("resource_validation", {}).get("enabled", True):
             try:
+                logger.info("Starting resource validation")
                 resource_result = ResourceValidator.validate_all_resources(dataset)
                 result["checks"]["resources"] = resource_result
-                
+                logger.info(f"Resource validation completed: {resource_result.get('overall_status')}")
+
                 if resource_result.get("overall_status") == "fail":
                     result["issues"].append("Resource validation failed")
                     result["overall_status"] = "fail"
@@ -87,8 +110,10 @@ class DataQualityChecker:
         # Metadata validation
         if quality_checks.get("metadata", {}).get("enabled", True):
             try:
+                logger.info("Starting metadata validation")
                 metadata_result = MetadataValidator.validate_metadata(dataset)
                 result["checks"]["metadata"] = metadata_result
+                logger.info(f"Metadata validation completed: {metadata_result.get('overall_status')}")
                 
                 if metadata_result.get("overall_status") == "fail":
                     result["issues"].append("Metadata validation failed")
@@ -103,8 +128,10 @@ class DataQualityChecker:
         # Language validation
         if quality_checks.get("language_check", {}).get("enabled", True):
             try:
+                logger.info("Starting language validation")
                 language_result = LanguageValidator.validate_languages(dataset)
                 result["checks"]["language"] = language_result
+                logger.info(f"Language validation completed: {language_result.get('overall_status')}")
                 
                 # Check if bilingual
                 lang_checks = language_result.get("language_checks", [])
@@ -131,8 +158,10 @@ class DataQualityChecker:
         # Arabic validation
         if quality_checks.get("arabic_encoding", {}).get("enabled", True):
             try:
+                logger.info("Starting Arabic validation")
                 arabic_result = ArabicValidator.validate_arabic_content(dataset)
                 result["checks"]["arabic"] = arabic_result
+                logger.info(f"Arabic validation completed: {arabic_result.get('overall_status')}")
                 
                 if arabic_result.get("overall_status") == "warning":
                     if result["overall_status"] != "fail":
@@ -144,13 +173,72 @@ class DataQualityChecker:
         # Time period validation
         if quality_checks.get("time_period", {}).get("enabled", True):
             try:
+                logger.info("Starting time period validation")
                 time_result = TimePeriodValidator.validate_time_period(dataset)
                 result["checks"]["time_period"] = time_result
+                logger.info(f"Time period validation completed: {time_result.get('overall_status')}")
             except Exception as e:
                 logger.error(f"Error in time period validation: {e}")
                 result["checks"]["time_period"] = {"error": str(e)}
 
         return result
+
+    def extract_years(self, dataset: Dict[str, Any]) -> List[str]:
+        year_pattern = re.compile(r"\b(?:19|20)\d{2}\b")
+        years = set()
+
+        def scan(value: Any):
+            if isinstance(value, dict):
+                for k, v in value.items():
+                    scan(k)
+                    scan(v)
+            elif isinstance(value, list):
+                for item in value:
+                    scan(item)
+            else:
+                try:
+                    text = str(value)
+                except Exception:
+                    return
+                for match in year_pattern.findall(text):
+                    years.add(match)
+
+        scan(dataset)
+
+        # If metadata does not reveal year values, inspect resource content previews.
+        if not years:
+            for resource in dataset.get("resources", []):
+                preview = self._get_resource_preview_text(resource)
+                if preview:
+                    for match in year_pattern.findall(preview):
+                        years.add(match)
+                if years:
+                    break
+
+        return sorted(years)
+
+    def _get_resource_preview_text(self, resource: Dict[str, Any], max_bytes: int = 200000) -> str:
+        if resource.get("resource_guid"):
+            return self.client.fetch_resource_preview_by_guid(resource["resource_guid"], max_bytes=max_bytes)
+        if resource.get("url"):
+            return self.client.fetch_resource_preview_by_url(resource["url"], max_bytes=max_bytes)
+        return ""
+
+    def check_dataset_by_id(self, dataset_id: str) -> Dict[str, Any]:
+        logger.info(f"Scraping dataset page for dataset_id={dataset_id}")
+        dataset = self.client.scrape_dataset_page(dataset_id)
+        logger.info(
+            f"Dataset scraped: {dataset.get('title') or dataset.get('name') or dataset_id}"
+        )
+        return self.check_dataset(dataset)
+
+    def check_dataset_by_url(self, dataset_url: str) -> Dict[str, Any]:
+        logger.info(f"Scraping dataset page for dataset_url={dataset_url}")
+        dataset = self.client.scrape_dataset_page(dataset_url)
+        logger.info(
+            f"Dataset scraped: {dataset.get('title') or dataset.get('name') or dataset_url}"
+        )
+        return self.check_dataset(dataset)
 
     def check_datasets_by_organization(
         self,
@@ -259,15 +347,19 @@ class DataQualityChecker:
         if formats is None:
             formats = self.config.get("reporting", {}).get("output_formats", ["json", "csv", "html"])
 
-        return ReportGenerator.save_report(
+        logger.info(f"Generating reports in {output_dir} for formats: {formats}")
+        files = ReportGenerator.save_report(
             results,
             output_dir=output_dir,
             formats=formats,
             include_summary=self.config.get("reporting", {}).get("include_summary", True),
         )
+        logger.info(f"Reports generated: {files}")
+        return files
 
     def close(self):
         """Close the API client"""
+        logger.info("Closing DataQualityChecker and Bayanat API client")
         self.client.close()
 
 
@@ -286,6 +378,14 @@ def main():
     parser.add_argument(
         "--organization",
         help="Specific organization ID to check",
+    )
+    parser.add_argument(
+        "--dataset-id",
+        help="Dataset ID to scrape and check from the public website",
+    )
+    parser.add_argument(
+        "--dataset-url",
+        help="Dataset page URL to scrape and check from the public website",
     )
     parser.add_argument(
         "--all-orgs",
@@ -318,16 +418,30 @@ def main():
         logger.info("Data Quality Checker initialized")
 
         # Run checks
-        if args.all_orgs:
+        if args.dataset_url:
+            logger.info(f"Checking single dataset URL: {args.dataset_url}")
+            results = [checker.check_dataset_by_url(args.dataset_url)]
+            logger.info("Generating reports")
+            files = checker.generate_reports(results, args.output_dir, args.formats)
+            for fmt, path in files.items():
+                print(f"✓ {fmt.upper()} report saved to: {path}")
+        elif args.dataset_id:
+            logger.info(f"Checking single dataset ID: {args.dataset_id}")
+            results = [checker.check_dataset_by_id(args.dataset_id)]
+            logger.info("Generating reports")
+            files = checker.generate_reports(results, args.output_dir, args.formats)
+            for fmt, path in files.items():
+                print(f"✓ {fmt.upper()} report saved to: {path}")
+        elif args.all_orgs:
             logger.info("Checking all organizations")
             all_results = checker.check_all_organizations(limit_per_org=args.limit)
-            
+
             # Generate reports for each organization
             for org_name, results in all_results.items():
                 org_output_dir = str(Path(args.output_dir) / org_name.replace(" ", "_"))
                 logger.info(f"Generating reports for {org_name}")
                 files = checker.generate_reports(results, org_output_dir, args.formats)
-                
+
                 for fmt, path in files.items():
                     print(f"✓ {org_name} - {fmt.upper()} report: {path}")
         else:
@@ -340,7 +454,7 @@ def main():
             # Generate reports
             logger.info("Generating reports")
             files = checker.generate_reports(results, args.output_dir, args.formats)
-            
+
             for fmt, path in files.items():
                 print(f"✓ {fmt.upper()} report saved to: {path}")
 

@@ -3,7 +3,6 @@
 import logging
 from typing import Dict, Any
 import re
-import chardet
 
 logger = logging.getLogger(__name__)
 

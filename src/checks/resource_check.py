@@ -86,6 +86,26 @@ class ResourceValidator:
         return result
 
     @staticmethod
+    def check_resource_guid(resource: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Check if a resource GUID was found via scraping.
+        """
+        result = {
+            "check": "resource_guid",
+            "resource_id": resource.get("id"),
+            "resource_name": resource.get("name"),
+            "resource_guid": resource.get("resource_guid"),
+            "status": "pass",
+            "issues": [],
+        }
+
+        if not resource.get("resource_guid"):
+            result["status"] = "warning"
+            result["issues"].append("Resource GUID not found on dataset page")
+
+        return result
+
+    @staticmethod
     def check_resource_format(resource: Dict[str, Any]) -> Dict[str, Any]:
         """
         Check resource format and metadata
@@ -148,10 +168,22 @@ class ResourceValidator:
 
         resources = dataset.get("resources", [])
         checks = [has_resources]
+        resource_details = []
         
         for resource in resources:
-            checks.append(ResourceValidator.check_resource_validity(resource))
-            checks.append(ResourceValidator.check_resource_format(resource))
+            guid_check = ResourceValidator.check_resource_guid(resource)
+            validity_check = ResourceValidator.check_resource_validity(resource)
+            format_check = ResourceValidator.check_resource_format(resource)
+            checks.extend([guid_check, validity_check, format_check])
+            resource_details.append({
+                "resource_id": resource.get("id"),
+                "resource_name": resource.get("name"),
+                "resource_guid": resource.get("resource_guid"),
+                "format": resource.get("format"),
+                "guid_check": guid_check,
+                "validity_check": validity_check,
+                "format_check": format_check,
+            })
 
         all_pass = all(check.get("status") == "pass" for check in checks)
         overall_status = "pass" if all_pass else (
@@ -161,5 +193,6 @@ class ResourceValidator:
 
         return {
             "resource_checks": checks,
+            "resource_details": resource_details,
             "overall_status": overall_status,
         }

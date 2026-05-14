@@ -94,9 +94,15 @@ class ReportGenerator:
             row = {
                 "Dataset ID": result.get("dataset_id"),
                 "Dataset Name": result.get("dataset_name"),
+                "Dataset Description": result.get("dataset_description", ""),
                 "Organization": result.get("organization"),
                 "Overall Status": result.get("overall_status"),
                 "Resources": result.get("resource_count", 0),
+                "Resource GUIDs": ";".join(result.get("resource_guids", [])),
+                "Resource Descriptions": ";".join(
+                    [str(r.get("description", "")) for r in result.get("resources", []) if r.get("description")]
+                ),
+                "Years Found": ";".join(result.get("years_found", [])),
                 "Has Resources": "Yes" if result.get("resource_count", 0) > 0 else "No",
                 "Bilingual": result.get("bilingual", "Unknown"),
                 "Issues": "|".join(result.get("issues", [])),
@@ -252,9 +258,13 @@ class ReportGenerator:
             <tr>
                 <th>معرّف مجموعة البيانات / Dataset ID</th>
                 <th>اسم مجموعة البيانات / Dataset Name</th>
+                <th>وصف مجموعة البيانات / Dataset Description</th>
                 <th>المنظمة / Organization</th>
                 <th>الحالة / Status</th>
                 <th>الموارد / Resources</th>
+                <th>معرف المورد / Resource GUIDs</th>
+                <th>وصف المورد / Resource Descriptions</th>
+                <th>السنة الموجودة / Years Found</th>
                 <th>ثنائي اللغة / Bilingual</th>
             </tr>
         </thead>
@@ -265,14 +275,22 @@ class ReportGenerator:
             status = result.get("overall_status", "unknown")
             status_class = f"status-{status}"
             bilingual = "نعم / Yes" if result.get("bilingual") else "لا / No"
-
+            resource_guids = "; ".join(result.get("resource_guids", []))
+            years_found = "; ".join(result.get("years_found", []))
+            resource_descriptions = "; ".join(
+                [str(r.get("description", "")) for r in result.get("resources", []) if r.get("description")]
+            )
             html_content += f"""
             <tr>
                 <td>{result.get('dataset_id', 'N/A')}</td>
                 <td>{result.get('dataset_name', 'N/A')}</td>
+                <td>{result.get('dataset_description', '')}</td>
                 <td>{result.get('organization', 'N/A')}</td>
                 <td><span class="{status_class}">{status.upper()}</span></td>
                 <td>{result.get('resource_count', 0)}</td>
+                <td>{resource_guids}</td>
+                <td>{resource_descriptions}</td>
+                <td>{years_found}</td>
                 <td>{bilingual}</td>
             </tr>
 """

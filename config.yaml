@@ -1,6 +1,7 @@
 # Bayanat Open Data Portal Configuration
 api:
   base_url: "https://bayanat.ae/api/3"
+  site_base_url: "https://bayanat.ae"
   timeout: 30
   max_retries: 3
 

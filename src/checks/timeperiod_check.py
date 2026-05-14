@@ -200,7 +200,7 @@ class TimePeriodValidator:
             result["mentions_time_period"] = True
 
         # Extract years (4-digit numbers that look like years)
-        year_pattern = r"\b(19|20)\d{2}\b"
+        year_pattern = r"\b(?:19|20)\d{2}\b"
         years = re.findall(year_pattern, description)
         if years:
             result["extracted_years"] = sorted(list(set(years)))
