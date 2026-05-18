@@ -110,6 +110,68 @@ class BayanatClient:
         response.raise_for_status()
         return response.text
 
+    def _normalize_url(self, url: str, base_url: Optional[str] = None) -> str:
+        if not url:
+            return ""
+        if url.startswith("//"):
+            return f"https:{url}"
+        if url.startswith("http"):
+            return url
+        base = base_url or self.site_base_url
+        return f"{base.rstrip('/')}/{url.lstrip('/')}"
+
+    def _strip_tags(self, html: str) -> str:
+        if not html:
+            return ""
+        text = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.I | re.S)
+        text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.I | re.S)
+        text = re.sub(r"<[^>]+>", "", text)
+        return unescape(text).strip()
+
+    def _extract_first_text(self, html: str, patterns: List[str]) -> Optional[str]:
+        for pattern in patterns:
+            match = re.search(pattern, html, flags=re.I | re.S)
+            if match:
+                text = match.group(1)
+                if text:
+                    return self._strip_tags(text).strip()
+        return None
+
+    def get_resource_page_html(self, resource_url: str) -> str:
+        page_url = self._normalize_url(resource_url)
+        logger.info(f"Scraping resource page: {page_url}")
+        response = self.session.get(page_url, timeout=self.timeout)
+        response.raise_for_status()
+        return response.text
+
+    def scrape_resource_page(self, resource_url: str) -> Dict[str, Any]:
+        html = self.get_resource_page_html(resource_url)
+        resource_data = {
+            "name": None,
+            "description": None,
+            "resource_guid": None,
+        }
+
+        resource_data["name"] = self._extract_first_text(
+            html,
+            [r"<h1[^>]*>(.*?)</h1>", r"<title[^>]*>(.*?)</title>", r"<meta[^>]+property=[\"']og:title[\"'][^>]+content=[\"'](.*?)[\"']"],
+        )
+        resource_data["description"] = self._extract_first_text(
+            html,
+            [
+                r"<meta[^>]+name=[\"']description[\"'][^>]+content=[\"'](.*?)[\"']",
+                r"<meta[^>]+property=[\"']og:description[\"'][^>]+content=[\"'](.*?)[\"']",
+                r"<div[^>]+class=[\"'][^\"']*(?:description|resource-description|summary)[^\"']*[\"'][^>]*>(.*?)</div>",
+                r"<p[^>]+class=[\"'][^\"']*(?:description|summary|resource-summary)[^\"']*[\"'][^>]*>(.*?)</p>",
+            ],
+        )
+
+        guid_match = re.search(r"(?:rid|resourceID)=([0-9A-Za-z_\-]+)", html)
+        if guid_match:
+            resource_data["resource_guid"] = guid_match.group(1)
+
+        return resource_data
+
     def scrape_dataset_page(self, dataset_identifier: str) -> Dict[str, Any]:
         """
         Scrape dataset metadata and resource GUIDs from the public website.
@@ -124,6 +186,32 @@ class BayanatClient:
             "resources": [],
             "resource_guids": [],
         }
+
+        def add_resource(url: str, guid: Optional[str] = None, name: Optional[str] = None, description: Optional[str] = None, format: Optional[str] = None):
+            if not url:
+                return
+            normalized_url = self._normalize_url(url)
+            if not normalized_url:
+                return
+
+            if not name:
+                name = f"resource_{len(dataset['resources']) + 1}"
+
+            if guid and any(r.get('resource_guid') == guid for r in dataset['resources']):
+                return
+
+            resource = {
+                "name": name.strip(),
+                "description": description or None,
+                "format": format,
+                "url": normalized_url,
+            }
+            if guid:
+                resource["resource_guid"] = guid
+                if guid not in dataset["resource_guids"]:
+                    dataset["resource_guids"].append(guid)
+
+            dataset["resources"].append(resource)
 
         ld_json_matches = re.findall(
             r"<script[^>]+type=[\"']application/ld\+json[\"'][^>]*>(.*?)</script>",
@@ -145,82 +233,102 @@ class BayanatClient:
                     distributions = data.get("distribution") or data.get("offers")
                     if isinstance(distributions, list):
                         for dist in distributions:
-                            resource = {
-                                "name": dist.get("name") or dist.get("description") or "resource",
-                                "description": dist.get("description") or None,
-                                "format": dist.get("encodingFormat"),
-                                "url": dist.get("contentUrl") or dist.get("url"),
-                            }
-                            identifier = dist.get("identifier") or resource["url"]
+                            identifier = dist.get("identifier") or dist.get("contentUrl") or dist.get("url")
+                            guid = None
                             if isinstance(identifier, str):
-                                guid_match = re.search(r"([0-9a-fA-F\-]{36})", identifier)
+                                guid_match = re.search(r"(?:rid|resourceID|ResourceGUID)=([0-9A-Za-z_\-]+)", identifier)
                                 if guid_match:
-                                    resource["resource_guid"] = guid_match.group(1)
-                            dataset["resources"].append(resource)
+                                    guid = guid_match.group(1)
+                            add_resource(
+                                url=dist.get("contentUrl") or dist.get("url"),
+                                guid=guid,
+                                name=dist.get("name") or dist.get("description") or None,
+                                description=dist.get("description"),
+                                format=dist.get("encodingFormat"),
+                            )
             except json.JSONDecodeError:
                 continue
 
         if not dataset["title"]:
-            title_match = re.search(r"<h1[^>]*>(.*?)</h1>", html, flags=re.I | re.S)
-            if title_match:
-                dataset["title"] = unescape(title_match.group(1).strip())
+            dataset["title"] = self._extract_first_text(
+                html,
+                [
+                    r"<h1[^>]*>(.*?)</h1>",
+                    r"<meta[^>]+property=[\"']og:title[\"'][^>]+content=[\"'](.*?)[\"']",
+                ],
+            )
 
         if not dataset["description"]:
-            desc_match = re.search(
-                r"<meta[^>]+name=[\"']description[\"'][^>]+content=[\"'](.*?)[\"']",
+            dataset["description"] = self._extract_first_text(
                 html,
-                flags=re.I | re.S,
+                [
+                    r"<div[^>]+class=[\"'][^\"']*(?:dataset[-_ ]description|description|summary|about|detail[-_ ]description)[^\"']*[\"'][^>]*>(.*?)</div>",
+                    r"<p[^>]+class=[\"'][^\"']*(?:dataset[-_ ]description|description|summary|about|detail[-_ ]description)[^\"']*[\"'][^>]*>(.*?)</p>",
+                    r"<div[^>]+id=[\"']description[\"'][^>]*>(.*?)</div>",
+                    r"<meta[^>]+name=[\"']description[\"'][^>]+content=[\"'](.*?)[\"']",
+                    r"<meta[^>]+property=[\"']og:description[\"'][^>]+content=[\"'](.*?)[\"']",
+                ],
             )
-            if desc_match:
-                dataset["description"] = unescape(desc_match.group(1).strip())
 
         if not dataset["organization"]:
-            org_match = re.search(
-                r"(?:Organization|Publisher)\s*[:\-]\s*</?strong>?\s*(.*?)<",
+            dataset["organization"] = self._extract_first_text(
                 html,
-                flags=re.I | re.S,
+                [
+                    r"(?:Entity Name|Entity|Organization|Publisher|Owner|Owner Name|الجهة|المؤسسة|المنظمة)\s*[:\-]?\s*</?[^>]*>\s*(.*?)<",
+                    r"<(?:span|div|p)[^>]+class=[\"'][^\"']*(?:entity|organization|publisher|org|owner|owner-name|entity-name)[^\"']*[\"'][^>]*>(.*?)</(?:span|div|p)>",
+                    r"<div[^>]+id=[\"']entity-name[\"'][^>]*>(.*?)</div>",
+                ],
             )
-            if org_match:
-                dataset["organization"] = unescape(org_match.group(1).strip())
 
-        resource_guids = []
         for match in re.finditer(
-            r"href=[\"']([^\"']*resourceID=([0-9a-fA-F\-]{36})[^\"']*)[\"'][^>]*>(.*?)</a>",
+            r"href=[\"']([^\"']*(?:rid|resourceID|ResourceGUID)=[^\"']*)[\"'][^>]*>(.*?)</a>",
             html,
             flags=re.I | re.S,
         ):
             url = match.group(1)
-            guid = match.group(2)
-            label = unescape(re.sub(r"<.*?>", "", match.group(3)).strip())
-            if guid not in resource_guids:
-                resource_guids.append(guid)
-            dataset["resources"].append({
-                "name": label or f"resource_{len(dataset['resources']) + 1}",
-                "resource_guid": guid,
-                "url": url,
-            })
+            label = self._strip_tags(match.group(2))
+            guid_match = re.search(r"(?:rid|resourceID|ResourceGUID)=([0-9A-Za-z_\-]+)", url)
+            guid = guid_match.group(1) if guid_match else None
+            add_resource(url=url, guid=guid, name=label or None)
 
-        if not resource_guids:
-            raw_guids = re.findall(r"resourceID=([0-9a-fA-F\-]{36})", html)
-            raw_guids += re.findall(
-                r"ResourceGUID[\"']?\s*[:=]\s*[\"']?([0-9a-fA-F\-]{36})",
+        if not dataset["resources"]:
+            matches = re.findall(r"(?:rid|resourceID|ResourceGUID)=([0-9A-Za-z_\-]+)", html, flags=re.I)
+            for guid in matches:
+                if guid not in dataset["resource_guids"]:
+                    add_resource(
+                        url=f"{self.site_base_url}/api/DatasetResources/GetDatasetResource?resourceID={guid}",
+                        guid=guid,
+                    )
+
+        if not dataset["resources"]:
+            data_attrs = re.findall(
+                r"(?:data-rid|data-resource-id|data-guid|data-resourceguid)[\"']?\s*[:=]\s*[\"']([0-9A-Za-z_\-]+)[\"']",
                 html,
                 flags=re.I,
             )
-            raw_guids += re.findall(
-                r"resource_guid[\"']?\s*[:=]\s*[\"']?([0-9a-fA-F\-]{36})",
-                html,
-                flags=re.I,
-            )
-            for guid in raw_guids:
-                if guid not in resource_guids:
-                    resource_guids.append(guid)
-                    dataset["resources"].append({
-                        "name": f"resource_{len(dataset['resources']) + 1}",
-                        "resource_guid": guid,
-                    })
+            for guid in data_attrs:
+                if guid not in dataset["resource_guids"]:
+                    add_resource(
+                        url=f"{self.site_base_url}/api/DatasetResources/GetDatasetResource?resourceID={guid}",
+                        guid=guid,
+                    )
 
-        dataset["resource_guids"] = resource_guids
+        for resource in dataset["resources"]:
+            if resource.get("url") and "/visualization" in resource.get("url"):
+                try:
+                    details = self.scrape_resource_page(resource["url"])
+                    if details.get("name"):
+                        resource["name"] = resource["name"] or details["name"]
+                    if details.get("description"):
+                        resource["description"] = resource["description"] or details["description"]
+                    if details.get("resource_guid") and not resource.get("resource_guid"):
+                        resource["resource_guid"] = details["resource_guid"]
+                        if details["resource_guid"] not in dataset["resource_guids"]:
+                            dataset["resource_guids"].append(details["resource_guid"])
+                except Exception as e:
+                    logger.debug(f"Unable to scrape resource page {resource.get('url')}: {e}")
+
+        dataset["resource_guids"] = list(dict.fromkeys(dataset["resource_guids"]))
         return dataset
 
     def get_dataset_resource_guids(self, dataset_name: str) -> List[str]:

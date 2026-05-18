@@ -1,6 +1,7 @@
 """Language validation checks"""
 
 import logging
+import re
 from typing import Dict, Any, List
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,14 @@ class LanguageValidator:
         return list(normalized)
 
     @staticmethod
+    def has_arabic_text(text: str) -> bool:
+        return bool(re.search(r"[\u0600-\u06FF]", str(text)))
+
+    @staticmethod
+    def has_english_text(text: str) -> bool:
+        return bool(re.search(r"[A-Za-z]", str(text)))
+
+    @staticmethod
     def check_bilingual_content(dataset: Dict[str, Any]) -> Dict[str, Any]:
         """
         Check if dataset is available in both Arabic and English
@@ -63,50 +72,43 @@ class LanguageValidator:
             "issues": [],
         }
 
-        # Check various language indicators
         languages = LanguageValidator.extract_language_codes(dataset)
-        
-        # Check if both AR and EN are present in resources
         ar_resources = []
         en_resources = []
-        
+
         for resource in dataset.get("resources", []):
-            # Check resource language
-            resource_lang = resource.get("language", "").lower()
+            combined_text = " ".join(
+                [str(resource.get("name", "")), str(resource.get("description", ""))]
+            )
+
+            if LanguageValidator.has_arabic_text(combined_text):
+                ar_resources.append(resource.get("name"))
+            if LanguageValidator.has_english_text(combined_text):
+                en_resources.append(resource.get("name"))
+
+            resource_lang = str(resource.get("language", "")).lower()
             if "ar" in resource_lang:
                 ar_resources.append(resource.get("name"))
             if "en" in resource_lang:
                 en_resources.append(resource.get("name"))
-            
-            # Check name and description for language indicators
-            name = resource.get("name", "").lower()
-            desc = resource.get("description", "").lower()
-            
-            if "arabic" in name or "عربي" in name or "ar" in name:
-                ar_resources.append(resource.get("name"))
-            if "english" in name or "انجليزي" in name or "en" in name:
-                en_resources.append(resource.get("name"))
 
-        # Check dataset-level fields
-        dataset_title = dataset.get("title", "")
-        dataset_name_en = None
-        dataset_name_ar = None
-        
-        if isinstance(dataset_title, dict):
-            dataset_name_en = dataset_title.get("en")
-            dataset_name_ar = dataset_title.get("ar")
-        
-        if dataset_name_en:
-            en_resources.append("dataset_title")
-        if dataset_name_ar:
-            ar_resources.append("dataset_title")
+        dataset_text = ""
+        if isinstance(dataset.get("title"), dict):
+            dataset_text = " ".join(str(v) for v in dataset["title"].values() if v)
+        else:
+            dataset_text = str(dataset.get("title", ""))
+        dataset_text += " " + str(dataset.get("description", ""))
+
+        if LanguageValidator.has_arabic_text(dataset_text):
+            ar_resources.append("dataset_text")
+        if LanguageValidator.has_english_text(dataset_text):
+            en_resources.append("dataset_text")
 
         result["en_resources"] = list(set(en_resources))
         result["ar_resources"] = list(set(ar_resources))
-        result["languages_found"] = list(set(languages + 
-            (["ar"] if ar_resources else []) + 
-            (["en"] if en_resources else [])))
-
+        result["languages_found"] = list(
+            set(languages + (["ar"] if ar_resources else []) + (["en"] if en_resources else []))
+        )
         has_ar = len(ar_resources) > 0
         has_en = len(en_resources) > 0
 
